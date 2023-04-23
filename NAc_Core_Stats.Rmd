@@ -1,0 +1,434 @@
+---
+title: "NAc Core Stats"
+author: "Ivan Borovets"
+date: "2023-03"
+output: html_document
+---
+# Loading the required libraries
+```{r Libs, include=FALSE}
+if(!require(pacman)){install.packages("pacman")}
+pacman::p_load(readxl, # Excel reader
+               ggplot2, # Plotter
+               dplyr, # Data Wrangling
+               lmerTest, # Linear Models (lmer)
+               multcomp, # Multiple Comparisons
+               performance, # Model Performance
+               see, # Plotting for "performance"
+               qqplotr, # Plotting QQs for "performance"
+               DHARMa, # Model Performance 
+               tibble) # (rownames_to_column)
+options(dplyr.summarise.inform = FALSE)
+```
+
+# Data reading and preprocessing
+```{r Data Reading, include = FALSE}
+CORE_DATA <- read_excel("DATA_CORE.xlsx")
+CORE_DATA$Т50_100 <- CORE_DATA$T100 - CORE_DATA$T50_1
+
+CORE_SUBSET <- subset(CORE_DATA,
+                      Rat != "Rat_71" &
+                        Rat != "Rat_69" & 
+                        Rat != "Rat_49" & 
+                        Rat != "Rat_63")
+
+CORE_SUBSET$Rat <- as.factor(CORE_SUBSET$Rat)
+
+CORE_SUBSET$GROUP <- factor(CORE_SUBSET$GROUP, 
+                            levels = c("BG", "30_min", "60_min", "90_min"))
+CORE_SUBSET$GROUP <- relevel(CORE_SUBSET$GROUP, ref = "BG")
+
+CORE_SUBSET$Ab <- as.factor(CORE_SUBSET$Ab)
+CORE_SUBSET$Ab <- relevel(CORE_SUBSET$Ab, ref = "Sal")
+
+CORE_SUBSET$Li <- as.factor(CORE_SUBSET$Li)
+CORE_SUBSET$Li <- relevel(CORE_SUBSET$Li, ref = "Sal")
+```
+
+# Data preparation
+```{r Data Preparation, include = FALSE}
+statsubset <- CORE_SUBSET %>%
+  dplyr::select(., -c("T50_2", "T80_plus", "T20_plus", "T50_2_plus", "Km", "Rsq")) %>%
+  rename(T50 = T50_1, Big_T = 'T') %>% 
+  relocate(AUC, FWHH, HL, .after = DAc) %>% 
+  relocate(Dap, Vmax, .after = HL) %>% 
+  relocate(SlopeT0T50, SlopeT50T100, SlopeT0T100, T50, T100, Т50_100, .after = Vmax) %>% 
+  relocate(SlopeT100T80, SlopeT80T20, SlopeT20T0, T100_80, T80_20, T20_0, Big_T, .after = Т50_100)
+```
+
+# Creation of comments for ggplot2
+```{r ggplot2 Comments Creation, include = FALSE}
+names(statsubset)[7:length(statsubset)]
+
+comments <- c("nM", # DAc
+              "nM", # AUC
+              "s", # FWHH
+              "s", # HL
+              "nM/s", # Dap
+              "nM", # Vmax
+              "nM/s", # SlopeT0T50
+              "nM/s", # SlopeT50T100
+              "nM/s", # SlopeT0T100
+              "s", # T50
+              "s", # T100
+              "s", # Т50_100
+              "nM/s", # SlopeT100T80
+              "nM/s", # SlopeT80T20
+              "nM/s", # SlopeT20T0
+              "s", # T100_80
+              "s", # T80_20
+              "s", # T20_0
+              "s" # Big_T
+              )
+
+lapply(1:length(comments), 
+       function(i){
+         comment(statsubset[,7:length(statsubset)][[i]]) <<- comments[i]})
+```
+
+# Choose variables to analyze
+```{r Choose variables to analyse, include = FALSE}
+statnames <- names(statsubset)[7:length(statsubset)] # manual slice adjustment to obtain all results
+```
+
+# Contrast matrices
+```{r Contrast matrices, include = FALSE}
+sz <- matrix(c(0, 0, 0), 1)
+
+s30 <- matrix(c(1, 0, 0), 1)
+s60 <- matrix(c(0, 1, 0), 1)
+s90 <- matrix(c(0, 0, 1), 1)
+
+ms30 <- matrix(c(-1, 0, 0), 1)
+ms60 <- matrix(c(0, -1, 0), 1)
+ms90 <- matrix(c(0, 0, -1), 1)
+
+contrast.matrix <- rbind(
+  "30 Sal vs. Ab" = c(0, 0, 0, sz, 0, s30, sz, sz),
+  "60 Sal vs. Ab" = c(0, 0, 0, sz, 0, s60, sz, sz),
+  "90 Sal vs. Ab" = c(0, 0, 0, sz, 0, s90, sz, sz),
+  
+  "30 Sal vs. Li" = c(0, 0, 0, sz, 0, sz, s30,  sz),
+  "60 Sal vs. Li" = c(0, 0, 0, sz, 0, sz, s60,  sz),
+  "90 Sal vs. Li" = c(0, 0, 0, sz, 0, sz, s90,  sz),
+  
+  "30 Sal vs. A*L" = c(0, 0, 0, sz, 0, s30, s30, s30),
+  "60 Sal vs. A*L" = c(0, 0, 0, sz, 0, s60, s60, s60),
+  "90 Sal vs. A*L" = c(0, 0, 0, sz, 0, s90, s90, s90),
+  
+  "30 Ab vs. A*L" = c(0, 0, 0, sz, 0, sz, s30, s30),
+  "60 Ab vs. A*L" = c(0, 0, 0, sz, 0, sz, s60, s60),
+  "90 Ab vs. A*L" = c(0, 0, 0, sz, 0, sz, s90, s90),
+  
+  "30 Li vs. A*L" = c(0, 0, 0, sz, 0, s30, sz, s30),
+  "60 Li vs. A*L" = c(0, 0, 0, sz, 0, s60, sz, s60),
+  "90 Li vs. A*L" = c(0, 0, 0, sz, 0, s90, sz, s90)
+)
+
+contrast.matrix2 <- rbind(
+  "30 Sal vs. 0" = c(0, 0, 0, s30, 0, sz, sz, sz),
+  "60 Sal vs. 0" = c(0, 0, 0, s60, 0, sz, sz, sz),
+  "90 Sal vs. 0" = c(0, 0, 0, s90, 0, sz, sz, sz),
+  
+  "30 Ab vs. 0" = c(0, 0, 0, s30, 0, s30, sz, sz),
+  "60 Ab vs. 0" = c(0, 0, 0, s60, 0, s60, sz, sz),
+  "90 Ab vs. 0" = c(0, 0, 0, s90, 0, s90, sz, sz),
+  
+  "30 Li vs. 0" = c(0, 0, 0, s30, 0, sz, s30, sz),
+  "60 Li vs. 0" = c(0, 0, 0, s60, 0, sz, s60, sz),
+  "90 Li vs. 0" = c(0, 0, 0, s90, 0, sz, s90, sz),
+  
+  "30 A*L vs. 0" = c(0, 0, 0, s30, 0, s30, s30, s30),
+  "60 A*L vs. 0" = c(0, 0, 0, s60, 0, s60, s60, s60),
+  "90 A*L vs. 0" = c(0, 0, 0, s90, 0, s90, s90, s90)
+)
+```
+
+# Building a test model for DAc
+```{r Test model for DAc}
+Model <- lmer(DAc ~ Ab*Li*GROUP + (1|Rat), na.action = "na.omit", data = statsubset, REML = FALSE)
+
+testModel <- function(model){
+  performance::check_normality(model, effects = "fixed") %>% plot(type = "qq") %>% print()
+  performance::check_normality(model, effects = "random") %>% plot() %>% print()
+  performance::check_outliers(model) %>% plot() %>% print()
+  performance::check_model(model, check = c("linearity", "homogeneity"), verbose = FALSE) %>% print()
+  DHARMa::simulateResiduals(fittedModel = model, plot = T) %>% print()
+}
+
+testModel(Model)
+```
+
+Model seems to be bad.
+Let's try to transform the dependent variable.
+
+# Exploring dependent variables
+```{r Exploring dependent variables}
+statsubset$DAc %>% density() %>% plot()
+statsubset$AUC %>% density() %>% plot()
+statsubset$Dap %>% density() %>% plot()
+statsubset$Vmax %>% density() %>% plot()
+```
+The generalized data for each variable appear to be positively skewed.
+In this case, one can try log, sqrt, and cube root transformations.
+
+# Test transformation of the dependent variable
+```{r Test transformation of the dependent variable}
+cube_root <- function(x){
+  x^(1/3) # for non-negatives only
+}
+
+Model_log <- lmer(log(DAc) ~ Ab*Li*GROUP + (1|Rat), na.action = "na.omit", data = statsubset, REML = FALSE)
+Model_sqrt <- lmer(sqrt(DAc) ~ Ab*Li*GROUP + (1|Rat), na.action = "na.omit", data = statsubset, REML = FALSE)
+Model_cube_root <- lmer(cube_root(DAc) ~ Ab*Li*GROUP + (1|Rat), na.action = "na.omit", data = statsubset, REML = FALSE)
+```
+
+# Test Model_log
+```{r Test Model_log}
+testModel(Model_log)
+```
+
+# Test Model_sqrt
+```{r Test Model_sqrt}
+testModel(Model_sqrt)
+```
+
+# Test Model_cube_root
+```{r Test Model_cube_root}
+testModel(Model_cube_root)
+```
+
+# Compare performance of test models
+```{r Compare performance of test models}
+compare_performance(Model_log, Model_sqrt, Model_cube_root,
+                    rank = TRUE, verbose = FALSE)
+```
+The cube root transformation demonstrates the best performance in both graphical and synthetic metrics.
+
+I wanted to build 3 types of models (with log, sqrt, and cube root transformation of the dependent variable) for each dependent variable and figure out which transformation is the best for each dependent variable. However, the "performance" library doesn't seem to be able to handle models built inside a loop. So I spent some time trying to figure out manually (changing a variable in chunk "Test transformation of the dependent variable") that models with a cube-root transformation of the dependent variables are indeed the best.
+
+To demonstrate the suitability of the selected models in general, the following are residual distribution checks.
+
+# Build final models
+```{r Build final models}
+models <- lapply(statnames, function(i){
+   Model <- lmer(cube_root(get(i)) ~ Ab*Li*GROUP + (1|Rat), na.action = "na.omit", data = statsubset, REML = FALSE)
+   Model@call[["formula"]] <- paste0("cube root(", i, ") ", "~ Ab*Li*GROUP + (1|Rat)")
+   Model
+})
+models <- setNames(models, statnames)
+```
+
+# Residual distribution checks for models built
+```{r Residual distribution checks for models built}
+testModelTruncated <- function(model){
+  performance::check_normality(model, effects = "fixed") %>% plot(type = "qq") %>% print()
+  performance::check_normality(model, effects = "random") %>% plot() %>% print()
+  DHARMa::simulateResiduals(fittedModel = model, plot = T) %>% print()
+}
+
+lapply(seq_along(models), function(i){
+  text <- paste0(statnames[i])
+  annotation <- ggplot() +
+    annotate("text", x = 4, y = 25, size = 28, label = text) +
+    theme_void()
+  print(annotation)
+  testModelTruncated(models[[i]])
+})
+```
+
+Summaries of models and contrasts will be written in a separate list.
+
+# List of summaries and contrasts
+```{r List of summaries and contrasts, include = FALSE}
+results <- list()
+
+lapply(statnames, function(i){
+  summary(models[[i]]) ->> results[[paste0(i)]][[1]]
+  glht(models[[i]], contrast.matrix, alternative = "two.sided") %>%
+    summary(., test = adjusted("none")) ->> results[[paste0(i)]][[2]]
+  glht(models[[i]], contrast.matrix2, alternative = "two.sided") %>%
+    summary(., test = adjusted("none")) ->> results[[paste0(i)]][[3]]
+})
+```
+
+Models are in the "models" list.
+Results are in the "results" list.
+
+# Preparation of plots
+```{r Plots preparation, include = FALSE}
+# future list of plot data
+plotlist <- list()
+
+lapply(statnames, function(i){
+  
+  # prepare a df of between-groups significances
+  results[[i]][[2]]$test$pvalues %>%
+    as.data.frame() %>%
+    rename(!!sprintf("%s p-val", i) := colnames(.)) %>%
+    rownames_to_column() -> between_groups
+  
+  between_groups <- between_groups %>%
+    mutate(vs.Sal = ifelse(between_groups[[2]] > 0.05,
+                           "",
+                           ifelse(grepl(pattern = "Sal", between_groups[[1]]),"S", "")),
+           vs.AL = ifelse(between_groups[[2]] > 0.05,
+                          "",
+                          ifelse(grepl(pattern = "A*L", between_groups[[1]]),"AL", "")))
+  
+  between_groups[grep(paste0("\\b","Sal vs. A\\*L","\\b"), between_groups[[1]]),][4] <- ""
+  
+  # prepare a df of significances vs. 0
+  results[[i]][[3]]$test$pvalues %>%
+    as.data.frame() %>%
+    rename(!!sprintf("%s p-val", i) := colnames(.)) %>%
+    rownames_to_column() -> vs_zero
+  
+  vs_zero <- vs_zero %>%
+    mutate(vs.0 = ifelse(vs_zero[[2]] > 0.05,
+                              "",
+                              "B"))
+  
+  # prepare data points for plotting
+  transformed <- statsubset
+  transformed[[i]] <- cube_root(statsubset[[i]])
+  
+  means_at_zero <- transformed %>%
+  dplyr::select(GROUP, Ab, Li, all_of(i)) %>%
+  dplyr::filter(GROUP == "BG") %>%
+  dplyr::group_by(Ab, Li) %>%
+  dplyr::summarise(mean = mean(get(i)))
+
+  # mean centering (subtracting group means at time point 0)
+  transformed[transformed$Ab == "Sal" & transformed$Li == "Sal",][[i]] <-
+    transformed[transformed$Ab == "Sal" & transformed$Li == "Sal",][[i]] - means_at_zero[[3]][1]
+  transformed[transformed$Ab == "Sal" & transformed$Li == "Li",][[i]] <-
+    transformed[transformed$Ab == "Sal" & transformed$Li == "Li",][[i]] - means_at_zero[[3]][2]
+  transformed[transformed$Ab == "Ab" & transformed$Li == "Sal",][[i]] <-
+    transformed[transformed$Ab == "Ab" & transformed$Li == "Sal",][[i]] - means_at_zero[[3]][3]
+  transformed[transformed$Ab == "Ab" & transformed$Li == "Li",][[i]] <-
+    transformed[transformed$Ab == "Ab" & transformed$Li == "Li",][[i]] - means_at_zero[[3]][4]
+  
+  # create a subset of summarized statistics for the plots
+  pre_plotsubset <- transformed %>%
+    dplyr::select(GROUP, Ab, Li, all_of(i)) %>%
+    dplyr::group_by(GROUP, Ab, Li) %>%
+    dplyr::summarise(mean = mean(get(i)),
+                     ci_top = t.test(get(i), conf.level = 0.95)$conf.int[2],
+                     ci_bot = t.test(get(i))$conf.int[1],
+                     sem_top = mean + sd(get(i)) / sqrt(length(get(i))),
+                     sem_bot = mean - sd(get(i)) / sqrt(length(get(i))))
+  
+  # mark the differences
+  pre_plotsubset$vs.Sal <- ""
+  pre_plotsubset$vs.AL <- ""
+  pre_plotsubset$vs.0 <- ""
+  plotsubset <- pre_plotsubset
+
+  ### ### 30' ### ###
+  from <- between_groups[grep("30", between_groups[[1]]),]
+  to <- pre_plotsubset[grep("30", pre_plotsubset[[1]]),]
+
+  ifelse(from$vs.Sal[1] != "", to$vs.Sal[3] <- from$vs.Sal[1], "") # Sal vs. Ab at 30'
+  ifelse(from$vs.Sal[2] != "", to$vs.Sal[2] <- from$vs.Sal[2], "") # Sal vs. Li at 30'
+  ifelse(from$vs.Sal[3] != "", to$vs.Sal[4] <- from$vs.Sal[3], "") # Sal vs. A*L at 30'
+  ifelse(from$vs.AL[4] != "", to$vs.AL[3] <- from$vs.AL[4], "") # A*L vs. Ab at 30'
+  ifelse(from$vs.AL[5] != "", to$vs.AL[2] <- from$vs.AL[5], "") # A*L vs. Li at 30'
+
+  from <- vs_zero[grep("30", vs_zero[[1]]),]
+
+  ifelse(from$vs.0[1] != "", to$vs.0[1] <- from$vs.0[1], "") # Zero vs. Sal at 30'
+  ifelse(from$vs.0[2] != "", to$vs.0[3] <- from$vs.0[2], "") # Zero vs. Ab at 30'
+  ifelse(from$vs.0[3] != "", to$vs.0[2] <- from$vs.0[3], "") # Zero vs. Li at 30'
+  ifelse(from$vs.0[4] != "", to$vs.0[4] <- from$vs.0[4], "") # Zero vs. A*L at 30'
+
+  plotsubset[grep("30", plotsubset[[1]]),] <- to
+  rm(list = c("to", "from"))
+
+  ### ### 60' ### ###
+  from <- between_groups[grep("60", between_groups[[1]]),]
+  to <- pre_plotsubset[grep("60", pre_plotsubset[[1]]),]
+
+  ifelse(from$vs.Sal[1] != "", to$vs.Sal[3] <- from$vs.Sal[1], "") # Sal vs. Ab at 60'
+  ifelse(from$vs.Sal[2] != "", to$vs.Sal[2] <- from$vs.Sal[2], "") # Sal vs. Li at 60'
+  ifelse(from$vs.Sal[3] != "", to$vs.Sal[4] <- from$vs.Sal[3], "") # Sal vs. A*L at 60'
+  ifelse(from$vs.AL[4] != "", to$vs.AL[3] <- from$vs.AL[4], "") # A*L vs. Ab at 60'
+  ifelse(from$vs.AL[5] != "", to$vs.AL[2] <- from$vs.AL[5], "") # A*L vs. Li at 60'
+
+  from <- vs_zero[grep("60", vs_zero[[1]]),]
+
+  ifelse(from$vs.0[1] != "", to$vs.0[1] <- from$vs.0[1], "") # Zero vs. Sal at 60'
+  ifelse(from$vs.0[2] != "", to$vs.0[3] <- from$vs.0[2], "") # Zero vs. Ab at 60'
+  ifelse(from$vs.0[3] != "", to$vs.0[2] <- from$vs.0[3], "") # Zero vs. Li at 60'
+  ifelse(from$vs.0[4] != "", to$vs.0[4] <- from$vs.0[4], "") # Zero vs. A*L at 60'
+
+  plotsubset[grep("60", plotsubset[[1]]),] <- to
+  rm(list = c("to", "from"))
+
+  ### ### 90' ### ###
+  from <- between_groups[grep("90", between_groups[[1]]),]
+  to <- pre_plotsubset[grep("90", pre_plotsubset[[1]]),]
+
+  ifelse(from$vs.Sal[1] != "", to$vs.Sal[3] <- from$vs.Sal[1], "") # Sal vs. Ab at 90'
+  ifelse(from$vs.Sal[2] != "", to$vs.Sal[2] <- from$vs.Sal[2], "") # Sal vs. Li at 90'
+  ifelse(from$vs.Sal[3] != "", to$vs.Sal[4] <- from$vs.Sal[3], "") # Sal vs. A*L at 90'
+  ifelse(from$vs.AL[4] != "", to$vs.AL[3] <- from$vs.AL[4], "") # A*L vs. Ab at 90'
+  ifelse(from$vs.AL[5] != "", to$vs.AL[2] <- from$vs.AL[5], "") # A*L vs. Li at 90'
+
+  from <- vs_zero[grep("90", vs_zero[[1]]),]
+
+  ifelse(from$vs.0[1] != "", to$vs.0[1] <- from$vs.0[1], "") # Zero vs. Sal at 90'
+  ifelse(from$vs.0[2] != "", to$vs.0[3] <- from$vs.0[2], "") # Zero vs. Ab at 90'
+  ifelse(from$vs.0[3] != "", to$vs.0[2] <- from$vs.0[3], "") # Zero vs. Li at 90'
+  ifelse(from$vs.0[4] != "", to$vs.0[4] <- from$vs.0[4], "") # Zero vs. A*L at 90'
+
+  plotsubset[grep("90", plotsubset[[1]]),] <- to
+  rm(list = c("to", "from"))
+  plotlist[[i]] <<- plotsubset
+})
+```
+
+Plot data is in the "plotlist" list.
+
+Before running the chunk below, set your working directory.
+
+# Plotting
+```{r Plotting}
+pd <- position_dodge(width = 0.3)
+color_scale <- c("grey30", "grey30", "grey70", "grey70")
+linetype_scale <- c("solid", "solid", "dotted", "dotted")
+shape_scale <- c(21, 22, 21, 22)
+
+lapply(statnames, function(i){
+  plotlist[[i]] %>% 
+    ggplot(aes(x = GROUP, y = mean,
+               group = interaction(Ab, Li), color = interaction(Ab, Li))) +
+    geom_line(aes(linetype = interaction(Ab, Li)), position = pd) +
+    geom_errorbar(data = subset(plotlist[[i]], GROUP != "BG"),
+                  aes(ymax = sem_top, ymin = sem_bot), position = pd, width = 0.2) +
+    geom_point(aes(shape = interaction(Ab, Li), fill = interaction(Ab, Li)), position = pd) +
+    geom_text(label = plotlist[[i]]$vs.Sal,
+            vjust = -0.25, hjust = -0.1, position = pd, show.legend = FALSE) +
+    geom_text(label = plotlist[[i]]$vs.AL,
+            vjust = +1.25, hjust = -0.1, position = pd, show.legend = FALSE) +
+    geom_text(label = plotlist[[i]]$vs.0,
+            vjust = -0.25, hjust = +1.1, position = pd, show.legend = FALSE) +
+    theme_classic() +
+    scale_color_manual(values = color_scale) +
+    scale_linetype_manual(values = linetype_scale) +
+    scale_shape_manual(values = shape_scale) +
+    scale_fill_manual(values = color_scale) +
+    scale_x_discrete(labels = c(0, 30, 60, 90)) +
+    labs(x = "Time, min",
+       y = sprintf("%s, cube root(%s)", i, comment(statsubset[[i]]))) +
+    ggtitle(sprintf("%s, mean ± SEM", i)) +
+    theme(plot.title = element_text(hjust = 0.5)) -> temp_plot
+  
+  ggsave(temp_plot, file = paste0("Plots/",
+  which(names(plotlist) == i),
+  ". plot_", i,".png"), width = 16, height = 10, units = "cm")
+})
+```
+
+```{r Run chunks above}
+
+```
