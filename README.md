@@ -1,6 +1,6 @@
 # NAc_Core_Stats
 
-This repository contains R script for analyzing data from the neuroscience experiment and plotting its results. 
+This repository contains the R script for analyzing data from the neuroscience experiment and plotting its results. 
 
 After downloading the necessary libraries and pre-processing the data, preliminary mixed linear models were built. Diagnostics of the resulting models showed the possible presence of a non-linear relationship between the dependent and independent variables. The dependent variables were generally distributed with positive skewness, so three types of models were built, potentially normalizing the distribution of the residuals of the resulting regression models: with logarithmic transformation of the dependent variable and using square and cubic roots.
 
